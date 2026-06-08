@@ -1,0 +1,31 @@
+# YOLOv8 Dataset Configuration
+# Update paths to your actual dataset location
+
+path: ./dataset          # root dataset directory
+train: images/train      # training images
+val: images/val          # validation images
+test: images/test        # test images (optional)
+
+# Number of classes
+nc: 5
+
+# Class names (must match your annotation labels)
+names:
+  0: ambulance
+  1: car
+  2: truck
+  3: bus
+  4: motorcycle
+
+# Dataset info
+description: >
+  AI Emergency Vehicle Detection Dataset
+  Collected from Indian highway CCTV footage.
+  Annotated with LabelImg / Roboflow.
+
+# Download from Roboflow (replace with your workspace/project)
+# roboflow:
+#   workspace: your-workspace
+#   project: ambulance-detection
+#   version: 1
+#   license: CC BY 4.0
