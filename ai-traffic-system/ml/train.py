@@ -38,16 +38,23 @@ def parse_args():
 
 
 def train(args):
+    import torch
     if not DATA_YAML.exists():
         print(f"❌ data.yaml not found at {DATA_YAML}")
         print("   Create it using prepare_dataset.py or follow docs/dataset_setup.md")
         sys.exit(1)
+
+    device = args.device
+    if device == "0" and not torch.cuda.is_available():
+        print("⚠️ CUDA device '0' requested but CUDA is not available in PyTorch. Falling back to 'cpu'.")
+        device = "cpu"
 
     print(f"🚀 Starting YOLOv8 training")
     print(f"   Model: {args.model}")
     print(f"   Epochs: {args.epochs}")
     print(f"   Batch: {args.batch}")
     print(f"   Image size: {args.imgsz}")
+    print(f"   Device: {device}")
     print(f"   Data: {DATA_YAML}")
 
     model = YOLO(args.model)
@@ -57,14 +64,14 @@ def train(args):
         epochs=args.epochs,
         batch=args.batch,
         imgsz=args.imgsz,
-        device=args.device,
+        device=device,
         project="runs/train",
         name="ambulance_detector",
         resume=args.resume,
         patience=20,
         save=True,
         plots=True,
-        workers=4,
+        workers=2,
         optimizer="AdamW",
         lr0=0.001,
         augment=True,
@@ -74,14 +81,21 @@ def train(args):
     )
 
     # Copy best weights
-    best = Path("runs/train/ambulance_detector/weights/best.pt")
+    save_dir = Path(results.save_dir) if hasattr(results, "save_dir") else Path("runs/detect/ambulance_detector")
+    best = save_dir / "weights" / "best.pt"
+    if not best.exists():
+        # Fallback search in runs directory
+        potential_bests = list(Path("runs").rglob("best.pt"))
+        if potential_bests:
+            best = potential_bests[-1]
+
     if best.exists():
         import shutil
         dest = WEIGHTS_DIR / "best.pt"
         shutil.copy(best, dest)
         print(f"✅ Best weights saved to {dest}")
     else:
-        print("⚠️  Training complete but best.pt not found. Check runs/train/")
+        print("⚠️ Training complete but best.pt not found. Check runs/")
 
     return results
 

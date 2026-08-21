@@ -1,17 +1,23 @@
-import { useState } from 'react'
-import { overrideSignal, activateCorridor, resetSignals } from '../utils/api'
+import { useState, useEffect } from 'react'
+import { overrideSignal, resetSignals } from '../utils/api'
 
 const DEFAULT_LANES = [
-  { lane_id: 'L1', name: 'Lane 01 Junction', state: 'red',   priority: false },
-  { lane_id: 'L2', name: 'Lane 02 Junction', state: 'red',   priority: false },
-  { lane_id: 'L3', name: 'Lane 03 Junction', state: 'green', priority: true  },
-  { lane_id: 'L4', name: 'Lane 04 Junction', state: 'red',   priority: false },
+  { lane_id: 'Lane A', name: 'Lane A Junction', state: 'green', countdown: 30 },
+  { lane_id: 'Lane B', name: 'Lane B Junction', state: 'red',   countdown: 30 },
+  { lane_id: 'Lane C', name: 'Lane C Junction', state: 'red',   countdown: 60 },
+  { lane_id: 'Lane D', name: 'Lane D Junction', state: 'red',   countdown: 90 },
 ]
 
 export default function SignalPanel({ lanes: propLanes }) {
-  const [lanes, setLanes]     = useState(propLanes || DEFAULT_LANES)
+  const [lanes, setLanes]     = useState(propLanes && propLanes.length > 0 ? propLanes : DEFAULT_LANES)
   const [loading, setLoading] = useState(false)
   const [msg, setMsg]         = useState('')
+
+  useEffect(() => {
+    if (propLanes && propLanes.length > 0) {
+      setLanes(propLanes)
+    }
+  }, [propLanes])
 
   const flash = (text) => { setMsg(text); setTimeout(() => setMsg(''), 3000) }
 
@@ -35,8 +41,9 @@ export default function SignalPanel({ lanes: propLanes }) {
 
   return (
     <div style={{ background: '#070d14', border: '1px solid #0d2035', borderRadius: 12, padding: 14 }}>
-      <div style={{ fontSize: 10, fontWeight: 700, color: '#3a5a7a', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 12 }}>
-        Signal Controller
+      <div style={{ fontSize: 10, fontWeight: 700, color: '#3a5a7a', letterSpacing: 2, textTransform: 'uppercase', marginBottom: 12, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span>Signal Controller (FSM)</span>
+        <span style={{ fontSize: 9, color: '#00e5ff', fontFamily: 'Share Tech Mono, monospace' }}>30s CIRCULAR CYCLE</span>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
@@ -51,9 +58,9 @@ export default function SignalPanel({ lanes: propLanes }) {
               <span style={{ fontSize: 12, color: '#6a9abf' }}>{lane.name}</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: stateColor[lane.state], boxShadow: `0 0 6px ${stateColor[lane.state]}` }} />
-              <span style={{ fontSize: 11, fontWeight: 700, color: stateColor[lane.state], letterSpacing: 0.5 }}>
-                {lane.state === 'green' ? 'GREEN (ACTIVE)' : lane.state === 'red' ? 'RED (BLOCK)' : 'YELLOW'}
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: stateColor[lane.state] || '#ff4444', boxShadow: `0 0 6px ${stateColor[lane.state] || '#ff4444'}` }} />
+              <span style={{ fontSize: 11, fontWeight: 700, color: stateColor[lane.state] || '#ff4444', letterSpacing: 0.5, fontFamily: 'Share Tech Mono, monospace' }}>
+                {lane.state === 'green' ? `GREEN (${lane.countdown ?? 30}s)` : `RED (${lane.countdown ?? 30}s)`}
               </span>
               <button
                 onClick={() => handleOverride(lane.lane_id, lane.state === 'green' ? 'red' : 'green')}
@@ -71,7 +78,7 @@ export default function SignalPanel({ lanes: propLanes }) {
 
       <div style={{ display: 'flex', gap: 8 }}>
         <button
-          onClick={() => handleOverride('L3', 'green')}
+          onClick={() => handleOverride('Lane B', 'green')}
           style={{ flex: 1, padding: 10, background: '#00e5ff18', border: '1px solid #00e5ff44', borderRadius: 8, color: '#00e5ff', fontFamily: 'Rajdhani, sans-serif', fontSize: 12, fontWeight: 700, letterSpacing: 1.5, cursor: 'pointer' }}
         >
           OVERRIDE MANUAL

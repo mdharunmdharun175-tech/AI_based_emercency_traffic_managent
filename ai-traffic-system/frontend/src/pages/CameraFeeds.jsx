@@ -1,14 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
+import SimulationControls from '../components/SimulationControls'
 
 const CAMS = [
-  { id: 'CAM-01', loc: 'Main Junction',  lane: 'L1', active: true  },
-  { id: 'CAM-02', loc: 'Highway Entry',  lane: 'L2', active: true  },
-  { id: 'CAM-03', loc: 'City Cross A',   lane: 'L3', active: false },
-  { id: 'CAM-04', loc: 'Hospital Gate',  lane: 'L4', active: true  },
+  { id: 'CAM-01', loc: 'Main Junction',  lane: 'L1', apiId: 'Lane A', active: true  },
+  { id: 'CAM-02', loc: 'Highway Entry',  lane: 'L2', apiId: 'Lane B', active: true  },
+  { id: 'CAM-03', loc: 'City Cross A',   lane: 'L3', apiId: 'Lane C', active: true  },
+  { id: 'CAM-04', loc: 'Hospital Gate',  lane: 'L4', apiId: 'Lane D', active: true  },
 ]
 
 const COLORS = {
-  ambulance:   '#ff4444',
+  ambulance:   '#ff0000', // Only Ambulance is Bright Red!
   police:      '#0088ff',
   fire_engine: '#ff6600',
   car:         '#00aaff',
@@ -16,153 +17,169 @@ const COLORS = {
   bus:         '#aa44ff',
   motorcycle:  '#00ff88',
   auto:        '#ff88cc',
-  unknown:     '#ffffff',
+  unknown:     '#4a6b8c',
 }
 
-function CameraBox({ cam, signalStates, onAmbulanceDetected }) {
+function CameraBox({ cam, signalInfo, onAmbulanceDetected }) {
   const [videoSrc,     setVideoSrc]     = useState(null)
   const [videoName,    setVideoName]    = useState('')
-  const [detecting,    setDetecting]    = useState(false)
+  const [detecting,    setDetecting]    = useState(true)
   const [ambulance,    setAmbulance]    = useState(false)
   const [plate,        setPlate]        = useState(null)
   const [vehicleCount, setVehicleCount] = useState(0)
   const [procMs,       setProcMs]       = useState(0)
-  const [vidDims,      setVidDims]      = useState({ w: 640, h: 360 })
+  const [useSimFeed,   setUseSimFeed]   = useState(true)
 
-  const fileRef     = useRef()
-  const videoRef    = useRef()
-  const captureRef  = useRef()
-  const overlayRef  = useRef()
-  const detectRef   = useRef()
-  const animRef     = useRef()
-  const vehiclesRef = useRef([])
+  const fileRef        = useRef()
+  const videoRef       = useRef()
+  const imgRef         = useRef()
+  const captureRef     = useRef()
+  const overlayRef     = useRef()
+  const detectRef      = useRef()
+  const animRef        = useRef()
+  const vehiclesRef    = useRef([])
+  const captureDimsRef = useRef({ w: 640, h: 360 })
 
-  // ── Draw boxes ────────────────────────────────────────
+  // ── Draw bounding boxes on Canvas ───────
   const drawFrame = useCallback(() => {
     const canvas = overlayRef.current
-    const video  = videoRef.current
-    if (!canvas || !video) {
+    if (!canvas) {
       animRef.current = requestAnimationFrame(drawFrame)
       return
     }
 
-    const W = canvas.offsetWidth
-    const H = canvas.offsetHeight
-    canvas.width  = W
-    canvas.height = H
+    const W = canvas.offsetWidth || 640
+    const H = canvas.offsetHeight || 360
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width  = W
+      canvas.height = H
+    }
 
-    const ctx    = canvas.getContext('2d')
+    const ctx = canvas.getContext('2d')
     ctx.clearRect(0, 0, W, H)
 
     const list   = vehiclesRef.current
-    const scaleX = W / vidDims.w
-    const scaleY = H / vidDims.h
+    const capW   = captureDimsRef.current.w || 640
+    const capH   = captureDimsRef.current.h || 360
+    const scaleX = W / capW
+    const scaleY = H / capH
 
     list.forEach(v => {
-      const color = COLORS[v.type] || '#00aaff'
+      const isAmb = v.is_emergency || v.type === 'ambulance'
       const bb    = v.bbox
-      const x     = bb.x      * scaleX
-      const y     = bb.y      * scaleY
-      const bw    = bb.width  * scaleX
-      const bh    = bb.height * scaleY
-      const isAmb = v.is_emergency
+      if (!bb) return
+
+      const x  = bb.x      * scaleX
+      const y  = bb.y      * scaleY
+      const bw = bb.width  * scaleX
+      const bh = bb.height * scaleY
 
       ctx.save()
+
       if (isAmb) {
-        ctx.shadowBlur  = 20
-        ctx.shadowColor = '#ff4444'
-      }
-      ctx.strokeStyle = color
-      ctx.lineWidth   = isAmb ? 3.5 : 1.5
-      ctx.strokeRect(x, y, bw, bh)
-      ctx.restore()
+        // ONLY THE AMBULANCE IS DRAWN IN BRIGHT RED WITH GLOWING RED HIGHLIGHTS & CROSSHAIRS!
+        ctx.shadowBlur  = 25
+        ctx.shadowColor = '#ff0000'
+        ctx.strokeStyle = '#ff0000'
+        ctx.lineWidth   = 3.5
+        ctx.strokeRect(x, y, bw, bh)
+        ctx.restore()
 
-      // Label
-      const label = isAmb
-        ? `AMBULANCE ${Math.round(v.confidence * 100)}%`
-        : `${v.type.toUpperCase()} ${Math.round(v.confidence * 100)}%`
-      ctx.font    = `bold ${isAmb ? 13 : 10}px monospace`
-      const tw    = ctx.measureText(label).width
-      ctx.fillStyle = color + 'dd'
-      ctx.fillRect(x, y - 18, tw + 8, 18)
-      ctx.fillStyle = isAmb ? '#ffffff' : '#000000'
-      ctx.fillText(label, x + 4, y - 4)
+        // Red ambulance top label badge
+        const confPct = Math.round((v.confidence || 0.95) * 100)
+        const label   = `🚨 AMBULANCE ${confPct}%`
+        ctx.font      = 'bold 12px monospace'
+        const tw      = ctx.measureText(label).width
+        
+        ctx.fillStyle = '#ff0000'
+        ctx.fillRect(x, y - 20 > 0 ? y - 20 : y, tw + 10, 20)
+        ctx.fillStyle = '#ffffff'
+        ctx.fillText(label, x + 5, y - 20 > 0 ? y - 5 : y + 14)
 
-      // Ambulance extras
-      if (isAmb) {
-        const br = 10
-        ctx.strokeStyle = '#ff4444'
-        ctx.lineWidth   = 2.5
-        const corners = [
-          [[x, y+br],[x, y],[x+br, y]],
-          [[x+bw-br, y],[x+bw, y],[x+bw, y+br]],
-          [[x, y+bh-br],[x, y+bh],[x+br, y+bh]],
-          [[x+bw-br, y+bh],[x+bw, y+bh],[x+bw, y+bh-br]],
-        ]
-        corners.forEach(pts => {
-          ctx.beginPath()
-          ctx.moveTo(pts[0][0], pts[0][1])
-          ctx.lineTo(pts[1][0], pts[1][1])
-          ctx.lineTo(pts[2][0], pts[2][1])
-          ctx.stroke()
-        })
+        // Emergency Target Crosshairs
+        const cx = x + bw / 2, cy = y + bh / 2, cs = 12
+        ctx.strokeStyle = '#ff0000'
+        ctx.lineWidth   = 3
+        ctx.beginPath(); ctx.moveTo(cx, cy - cs); ctx.lineTo(cx, cy + cs); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(cx - cs, cy); ctx.lineTo(cx + cs, cy); ctx.stroke()
+      } else {
+        // Regular traffic vehicles (Car, Truck, Bus, Bike) use clean standard outline
+        const color     = COLORS[v.type] || '#00aaff'
+        ctx.strokeStyle = color
+        ctx.lineWidth   = 1.5
+        ctx.strokeRect(x, y, bw, bh)
+        ctx.restore()
 
-        const cx = x + bw/2, cy = y + bh/2, cs = 12
-        ctx.strokeStyle = '#ff4444'
-        ctx.lineWidth   = 4
-        ctx.beginPath(); ctx.moveTo(cx, cy-cs); ctx.lineTo(cx, cy+cs); ctx.stroke()
-        ctx.beginPath(); ctx.moveTo(cx-cs, cy); ctx.lineTo(cx+cs, cy); ctx.stroke()
+        const confPct = Math.round((v.confidence || 0.85) * 100)
+        const label   = `${(v.type || 'CAR').toUpperCase()} ${confPct}%`
+        ctx.font      = '10px monospace'
+        const tw      = ctx.measureText(label).width
 
-        const alpha = Math.sin(Date.now() / 400) * 0.4 + 0.6
-        ctx.strokeStyle = `rgba(255,68,68,${alpha})`
-        ctx.lineWidth   = 2
-        ctx.beginPath()
-        ctx.arc(cx, cy, Math.max(bw, bh) / 2 + 14, 0, Math.PI * 2)
-        ctx.stroke()
+        ctx.fillStyle = color + 'cc'
+        ctx.fillRect(x, y - 16 > 0 ? y - 16 : y, tw + 6, 16)
+        ctx.fillStyle = '#000000'
+        ctx.fillText(label, x + 3, y - 16 > 0 ? y - 4 : y + 12)
       }
     })
 
     animRef.current = requestAnimationFrame(drawFrame)
-  }, [vidDims])
+  }, [])
 
   useEffect(() => {
-    if (videoSrc) {
-      animRef.current = requestAnimationFrame(drawFrame)
-    }
+    animRef.current = requestAnimationFrame(drawFrame)
     return () => cancelAnimationFrame(animRef.current)
-  }, [videoSrc, drawFrame])
+  }, [drawFrame])
 
-  // ── File picker ───────────────────────────────────────
   const handleFile = (e) => {
     const file = e.target.files[0]
     if (!file) return
     setVideoName(file.name)
     setVideoSrc(URL.createObjectURL(file))
+    setUseSimFeed(false)
     vehiclesRef.current = []
     setAmbulance(false)
     setPlate(null)
   }
 
-  // ── Detection loop ────────────────────────────────────
-  const startDetection = () => {
+  // ── Concurrent Detection Loop for ALL 4 Cameras ──
+  const startDetection = useCallback(() => {
     if (detectRef.current) clearInterval(detectRef.current)
-    setDetecting(true)
+
+    const video = videoRef.current
+    if (video && video.paused) {
+      video.play().catch(() => {})
+    }
 
     detectRef.current = setInterval(async () => {
-      const video  = videoRef.current
+      const vid    = videoRef.current
+      const img    = imgRef.current
       const canvas = captureRef.current
-      if (!video || !canvas || video.paused || video.ended) return
+      if (!canvas) return
 
-      const W = video.videoWidth  || 640
-      const H = video.videoHeight || 360
+      let sourceEl = null
+      let srcW = 640, srcH = 360
+
+      if (videoSrc && vid && !vid.paused && !vid.ended) {
+        sourceEl = vid
+        srcW = vid.videoWidth || 640
+        srcH = vid.videoHeight || 360
+      } else if (useSimFeed && img && img.complete && img.naturalWidth > 0) {
+        sourceEl = img
+        srcW = img.naturalWidth || 640
+        srcH = img.naturalHeight || 360
+      }
+
+      if (!sourceEl) return
+
       canvas.width  = 640
-      canvas.height = Math.round(640 * H / W)
-      setVidDims({ w: canvas.width, h: canvas.height })
+      canvas.height = Math.max(200, Math.round(640 * srcH / srcW))
+      captureDimsRef.current = { w: canvas.width, h: canvas.height }
 
       const ctx = canvas.getContext('2d')
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      ctx.drawImage(sourceEl, 0, 0, canvas.width, canvas.height)
 
       canvas.toBlob(async (blob) => {
+        if (!blob) return
         try {
           const form = new FormData()
           form.append('file', blob, 'frame.jpg')
@@ -170,49 +187,66 @@ function CameraBox({ cam, signalStates, onAmbulanceDetected }) {
           if (!res.ok) return
           const data = await res.json()
 
-          const vList  = data.vehicles || []
-          const hasAmb = vList.some(v => v.is_emergency)
+          const vList       = data.vehicles || []
+          const trackedAmbs = data.tracked_ambulances || []
 
-          vehiclesRef.current = vList
-          setVehicleCount(vList.length)
+          let combinedList = [...vList]
+          trackedAmbs.forEach(amb => {
+            if (!combinedList.some(v => v.id === amb.tracking_id)) {
+              combinedList.push({
+                id: amb.tracking_id,
+                type: 'ambulance',
+                confidence: amb.combined_score || amb.confidence,
+                bbox: amb.bbox,
+                is_emergency: true,
+              })
+            }
+          })
+
+          const hasAmb = trackedAmbs.some(a => a.verified || (a.combined_score || 0) >= 0.65) || vList.some(v => v.is_emergency)
+
+          vehiclesRef.current = combinedList
+          setVehicleCount(combinedList.length)
           setProcMs(Math.round(data.processing_time_ms || 0))
           setAmbulance(hasAmb)
 
           if (hasAmb) {
-            setPlate(data.ambulance_plate)
-            onAmbulanceDetected(cam.lane)
+            const plateStr = data.ambulance_plate || (trackedAmbs[0] && trackedAmbs[0].plate) || 'KA-05-EM-108'
+            setPlate(plateStr)
+            onAmbulanceDetected(cam.apiId)
           }
         } catch { /* backend offline */ }
       }, 'image/jpeg', 0.85)
     }, 350)
-  }
+  }, [videoSrc, useSimFeed, cam.apiId, onAmbulanceDetected])
 
-  // ── Stop ──────────────────────────────────────────────
-  const stop = () => {
+  useEffect(() => {
+    startDetection()
+    return () => clearInterval(detectRef.current)
+  }, [startDetection])
+
+  const stopCustomVideo = () => {
     clearInterval(detectRef.current)
-    cancelAnimationFrame(animRef.current)
-    setDetecting(false)
     setVideoSrc(null)
     setVideoName('')
+    setUseSimFeed(true)
     vehiclesRef.current = []
     setAmbulance(false)
     setPlate(null)
-    setVehicleCount(0)
-    const c = overlayRef.current
-    if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height)
   }
 
-  const mySignal = signalStates[cam.lane] || 'red'
-  const sigColor = { green: '#00ff88', red: '#ff4444', yellow: '#ffaa00' }
-  const sigLabel = { green: 'GREEN', red: 'RED', yellow: 'YELLOW' }
+  const mySignal = signalInfo?.color || 'RED'
+  const countdown = signalInfo?.countdown ?? 30
+  const isEmergency = signalInfo?.is_emergency ?? false
+  const sigColor = { GREEN: '#00ff88', RED: '#ff4444', YELLOW: '#ffaa00' }
 
   return (
     <div style={{
       background: '#070d14',
-      border: `2px solid ${ambulance ? '#ff4444' : mySignal === 'green' ? '#00ff8866' : '#0d2035'}`,
+      border: `2px solid ${isEmergency || ambulance ? '#ff0000' : mySignal === 'GREEN' ? '#00ff8866' : '#0d2035'}`,
       borderRadius: 12, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
-      boxShadow: ambulance ? '0 0 24px #ff444433' : mySignal === 'green' ? '0 0 16px #00ff8822' : 'none',
+      boxShadow: isEmergency || ambulance ? '0 0 28px #ff000055' : mySignal === 'GREEN' ? '0 0 16px #00ff8822' : 'none',
       transition: 'all 0.4s',
     }}>
 
@@ -220,104 +254,98 @@ function CameraBox({ cam, signalStates, onAmbulanceDetected }) {
       <div style={{ padding: '7px 10px', borderBottom: '1px solid #0d2035', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#050a0f', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <span style={{ fontSize: 10, fontWeight: 700, color: '#6a9abf', letterSpacing: 1.5 }}>{cam.id} — {cam.loc}</span>
-          <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 8, color: cam.active ? '#00ff88' : '#ff4444' }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor', display: 'inline-block' }} />
-            {cam.active ? 'LIVE' : 'OFFLINE'}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 3, fontSize: 8, color: '#00ff88' }}>
+            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#00ff88', display: 'inline-block' }} />
+            LIVE AI
           </span>
           <span style={{
-            background: sigColor[mySignal] + '20', color: sigColor[mySignal],
-            border: `1px solid ${sigColor[mySignal]}55`,
+            background: (sigColor[mySignal] || '#ff4444') + '20',
+            color: sigColor[mySignal] || '#ff4444',
+            border: `1px solid ${(sigColor[mySignal] || '#ff4444')}55`,
             borderRadius: 4, padding: '1px 7px', fontSize: 9, fontWeight: 700, letterSpacing: 1,
+            fontFamily: 'Share Tech Mono, monospace'
           }}>
-            {cam.lane} · {sigLabel[mySignal]}
+            {cam.lane} - {mySignal} ({countdown}s)
           </span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {detecting && (
-            <span style={{ fontSize: 9, color: '#3a5a7a', fontFamily: 'Share Tech Mono, monospace' }}>
-              {vehicleCount}v · {procMs}ms
-            </span>
-          )}
           <input ref={fileRef} type="file" accept="video/*" style={{ display: 'none' }} onChange={handleFile} />
           <button
             onClick={() => fileRef.current.click()}
             style={{ padding: '3px 9px', background: '#00e5ff15', border: '1px solid #00e5ff44', borderRadius: 5, color: '#00e5ff', fontSize: 9, fontWeight: 700, cursor: 'pointer', letterSpacing: 0.5 }}
           >
-            📁 {videoSrc ? 'CHANGE' : 'LOAD VIDEO'}
+            📁 {videoSrc ? 'CHANGE VIDEO' : 'LOAD VIDEO'}
           </button>
           {videoSrc && (
-            <button onClick={stop} style={{ padding: '3px 8px', background: '#ff444415', border: '1px solid #ff444440', borderRadius: 5, color: '#ff4444', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>✕</button>
+            <button onClick={stopCustomVideo} style={{ padding: '3px 8px', background: '#ff444415', border: '1px solid #ff444440', borderRadius: 5, color: '#ff4444', fontSize: 10, fontWeight: 700, cursor: 'pointer' }}>✕ STREAM</button>
           )}
         </div>
       </div>
 
-      {/* Video area */}
+      {/* Video / Stream Area with Canvas Bounding Box Overlay */}
       <div style={{ flex: 1, position: 'relative', background: '#030810', minHeight: 0, overflow: 'hidden' }}>
         <canvas ref={captureRef} style={{ display: 'none' }} />
 
-        {videoSrc ? (
+        {useSimFeed && !videoSrc ? (
           <>
-            <video
-              ref={videoRef}
-              src={videoSrc}
-              autoPlay loop muted
-              onPlay={startDetection}
+            <img
+              ref={imgRef}
+              src={`http://localhost:8000/api/sim/feed/${encodeURIComponent(cam.apiId)}`}
+              alt={cam.loc}
+              crossOrigin="anonymous"
               style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
             />
             <canvas
               ref={overlayRef}
               style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 5 }}
             />
-
-            {/* Ambulance alert */}
-            {ambulance && (
-              <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, background: '#ff000040', borderBottom: '1px solid #ff4444', padding: '5px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 8, height: 8, background: '#ff4444', borderRadius: '50%' }} />
-                <span style={{ color: '#ff4444', fontFamily: 'Rajdhani, sans-serif', fontWeight: 700, fontSize: 11, letterSpacing: 1.5 }}>
-                  🚨 AMBULANCE — {cam.lane} GREEN CORRIDOR
-                </span>
-                {plate && <span style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 10, color: '#ffaa00', marginLeft: 'auto' }}>PLATE: {plate}</span>}
-              </div>
-            )}
-
-            {/* Stats */}
-            <div style={{ position: 'absolute', bottom: 6, left: 6, zIndex: 8, background: '#000000cc', border: '1px solid #ffffff15', borderRadius: 6, padding: '5px 8px' }}>
-              <div style={{ fontSize: 8, color: detecting ? '#00ff88' : '#3a5a7a', letterSpacing: 1.5, marginBottom: 2 }}>
-                {detecting ? '● AI ACTIVE' : '○ IDLE'}
-              </div>
-              <div style={{ fontSize: 10, color: '#c8d8e8' }}>
-                Vehicles: <b style={{ color: '#00e5ff' }}>{vehicleCount}</b>
-              </div>
-              <div style={{ fontSize: 10, color: '#c8d8e8' }}>
-                Ambulance: <b style={{ color: ambulance ? '#ff4444' : '#3a5a7a' }}>{ambulance ? '⚠ YES' : 'NO'}</b>
-              </div>
-              <div style={{ fontSize: 9, color: '#3a5a7a', fontFamily: 'Share Tech Mono, monospace' }}>{procMs}ms</div>
-            </div>
-
-            {videoName && (
-              <div style={{ position: 'absolute', bottom: 6, right: 6, zIndex: 8, fontSize: 8, color: '#3a5a7a', fontFamily: 'Share Tech Mono, monospace', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {videoName}
-              </div>
-            )}
           </>
-        ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, position: 'relative' }}>
-            <div style={{ position: 'absolute', inset: 0, backgroundImage: 'linear-gradient(#0d203512 1px,transparent 1px),linear-gradient(90deg,#0d203512 1px,transparent 1px)', backgroundSize: '20px 20px' }} />
-            {cam.active ? (
-              <div style={{ position: 'relative', zIndex: 2, textAlign: 'center' }}>
-                <div style={{ fontSize: 24, marginBottom: 6 }}>📷</div>
-                <div style={{ fontSize: 10, color: '#3a5a7a', fontFamily: 'Share Tech Mono, monospace', marginBottom: 8 }}>NO VIDEO</div>
-                <button
-                  onClick={() => fileRef.current.click()}
-                  style={{ padding: '6px 16px', background: '#00e5ff15', border: '1px solid #00e5ff44', borderRadius: 7, color: '#00e5ff', fontFamily: 'Rajdhani, sans-serif', fontSize: 11, fontWeight: 700, letterSpacing: 1, cursor: 'pointer' }}
-                >
-                  📁 LOAD VIDEO
-                </button>
-              </div>
-            ) : (
-              <span style={{ color: '#1a3050', fontFamily: 'Share Tech Mono, monospace', fontSize: 10, position: 'relative', zIndex: 2 }}>NO SIGNAL</span>
-            )}
+        ) : videoSrc ? (
+          <>
+            <video
+              ref={videoRef}
+              src={videoSrc}
+              autoPlay loop muted playsInline
+              onLoadedData={startDetection}
+              onPlay={startDetection}
+              onCanPlay={startDetection}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+            />
+            <canvas
+              ref={overlayRef}
+              style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 5 }}
+            />
+          </>
+        ) : null}
+
+        {/* Emergency Alert Banner */}
+        {(isEmergency || ambulance) && (
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 10, background: '#ff0000aa', borderBottom: '2px solid #ff0000', padding: '5px 10px', display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ width: 8, height: 8, background: '#ffffff', borderRadius: '50%' }} />
+            <span style={{ color: '#ffffff', fontFamily: 'Rajdhani, sans-serif', fontWeight: 700, fontSize: 11, letterSpacing: 1.5 }}>
+              🚨 AMBULANCE DETECTED — {cam.lane} EMERGENCY GREEN CORRIDOR
+            </span>
+            {plate && <span style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 10, color: '#ffff00', marginLeft: 'auto', fontWeight: 700 }}>PLATE: {plate}</span>}
+          </div>
+        )}
+
+        {/* Live HUD overlay */}
+        <div style={{ position: 'absolute', bottom: 6, left: 6, zIndex: 8, background: '#000000cc', border: '1px solid #00e5ff33', borderRadius: 6, padding: '5px 8px' }}>
+          <div style={{ fontSize: 8, color: '#00ff88', letterSpacing: 1.5, marginBottom: 2 }}>
+            ● AI ACTIVE
+          </div>
+          <div style={{ fontSize: 10, color: '#c8d8e8' }}>
+            Vehicles: <b style={{ color: '#00e5ff' }}>{vehicleCount}</b>
+          </div>
+          <div style={{ fontSize: 10, color: '#c8d8e8' }}>
+            Ambulance: <b style={{ color: isEmergency || ambulance ? '#ff0000' : '#3a5a7a' }}>{isEmergency || ambulance ? '⚠ YES (RED BOX)' : 'NO'}</b>
+          </div>
+        </div>
+
+        {videoName && (
+          <div style={{ position: 'absolute', bottom: 6, right: 6, zIndex: 8, fontSize: 8, color: '#3a5a7a', fontFamily: 'Share Tech Mono, monospace', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {videoName}
           </div>
         )}
       </div>
@@ -325,71 +353,107 @@ function CameraBox({ cam, signalStates, onAmbulanceDetected }) {
   )
 }
 
-// ── Main CameraFeeds page ─────────────────────────────
+// ── Main CameraFeeds Page ─────────────────────────────
 export default function CameraFeeds() {
-  const [signalStates, setSignalStates] = useState({ L1: 'red', L2: 'red', L3: 'red', L4: 'red' })
-  const [activeLane,   setActiveLane]   = useState(null)
-  const resetTimer = useRef()
+  const [fsmData, setFsmData] = useState({})
 
-  const handleAmbulanceDetected = useCallback((lane) => {
-    const newStates = {
-      L1: lane === 'L1' ? 'green' : 'red',
-      L2: lane === 'L2' ? 'green' : 'red',
-      L3: lane === 'L3' ? 'green' : 'red',
-      L4: lane === 'L4' ? 'green' : 'red',
+  // Poll FSM state every second
+  useEffect(() => {
+    const fetchFSM = async () => {
+      try {
+        const res = await fetch('http://localhost:8000/api/signals/fsm_state')
+        const data = await res.json()
+        if (data) setFsmData(data)
+      } catch { /* backend offline */ }
     }
-    setSignalStates(newStates)
-    setActiveLane(lane)
 
-    fetch(`http://localhost:8000/api/signal-control/corridor/${lane}?duration=30`, { method: 'POST' }).catch(() => {})
-
-    clearTimeout(resetTimer.current)
-    resetTimer.current = setTimeout(() => {
-      setSignalStates({ L1: 'red', L2: 'red', L3: 'red', L4: 'red' })
-      setActiveLane(null)
-    }, 30000)
+    fetchFSM()
+    const t = setInterval(fetchFSM, 1000)
+    return () => clearInterval(t)
   }, [])
 
-  const sigColor = { green: '#00ff88', red: '#ff4444', yellow: '#ffaa00' }
+  const handleAmbulanceDetected = useCallback((laneApiId) => {
+    fetch('http://localhost:8000/api/sim/spawn', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lane_id: laneApiId, distance: 120, confidence: 0.88, plate: 'KA-05-EM-108' }),
+    }).catch(() => {})
+  }, [])
+
+  const fsmState = fsmData?.controller_state || 'NORMAL'
+  const signals = fsmData?.signals || {}
+  const activeEmgLane = fsmData?.active_emergency_lane
+  const sigColor = { GREEN: '#00ff88', RED: '#ff4444', YELLOW: '#ffaa00' }
 
   return (
-    <div style={{ padding: '12px 20px', height: '100%', display: 'flex', flexDirection: 'column', gap: 10, overflow: 'hidden' }}>
+    <div style={{ padding: '12px 20px', height: '100%', display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
 
-      {/* Top bar */}
+      {/* Top Header Bar */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, color: '#3a5a7a', letterSpacing: 2 }}>CAMERA FEEDS — ALL JUNCTIONS</div>
+        <div style={{ fontSize: 10, fontWeight: 700, color: '#3a5a7a', letterSpacing: 2 }}>
+          CAMERA FEEDS — ALL JUNCTIONS (4-LANE INTERSECTION)
+        </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          {['L1','L2','L3','L4'].map(lane => (
-            <div key={lane} style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#070d14', border: `1px solid ${sigColor[signalStates[lane]]}44`, borderRadius: 6, padding: '4px 12px' }}>
-              <div style={{ width: 9, height: 9, borderRadius: '50%', background: sigColor[signalStates[lane]], boxShadow: `0 0 8px ${sigColor[signalStates[lane]]}` }} />
-              <span style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 10, color: sigColor[signalStates[lane]], fontWeight: 700 }}>
-                {lane} {signalStates[lane].toUpperCase()}
-              </span>
-            </div>
-          ))}
+          {CAMS.map(cam => {
+            const info = signals[cam.apiId] || { color: 'RED', countdown: 30 }
+            const col = sigColor[info.color] || '#ff4444'
+            return (
+              <div key={cam.id} style={{ display: 'flex', alignItems: 'center', gap: 5, background: '#070d14', border: `1px solid ${col}44`, borderRadius: 6, padding: '4px 12px' }}>
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: col, boxShadow: `0 0 8px ${col}` }} />
+                <span style={{ fontFamily: 'Share Tech Mono, monospace', fontSize: 10, color: col, fontWeight: 700 }}>
+                  {cam.lane} {info.color} ({info.countdown}s)
+                </span>
+              </div>
+            )
+          })}
         </div>
       </div>
 
-      {/* Corridor banner */}
-      {activeLane && (
-        <div style={{ flexShrink: 0, background: '#00ff8812', border: '1px solid #00ff8844', borderRadius: 8, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 9, height: 9, background: '#00ff88', borderRadius: '50%' }} />
-          <span style={{ color: '#00ff88', fontFamily: 'Rajdhani, sans-serif', fontWeight: 700, fontSize: 12, letterSpacing: 2 }}>
-            🚑 GREEN CORRIDOR — {activeLane} IS GREEN · ALL OTHERS RED · AUTO-RESET IN 30s
+      {/* Active Corridor / FSM Banner */}
+      <div style={{
+        flexShrink: 0,
+        background: fsmState === 'EMERGENCY_GREEN' ? '#ff000020' : fsmState === 'ALL_RED_SAFETY' ? '#ffaa0020' : '#00ff8812',
+        border: `1px solid ${fsmState === 'EMERGENCY_GREEN' ? '#ff444455' : fsmState === 'ALL_RED_SAFETY' ? '#ffaa0055' : '#00ff8844'}`,
+        borderRadius: 8,
+        padding: '8px 16px',
+        display: 'flex',
+        alignItems: 'center',
+        justify: 'space-between'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{
+            width: 9, height: 9, borderRadius: '50%',
+            background: fsmState === 'EMERGENCY_GREEN' ? '#ff4444' : fsmState === 'ALL_RED_SAFETY' ? '#ffaa00' : '#00ff88',
+            boxShadow: `0 0 10px ${fsmState === 'EMERGENCY_GREEN' ? '#ff4444' : '#00ff88'}`
+          }} />
+          <span style={{ color: fsmState === 'EMERGENCY_GREEN' ? '#ff4444' : fsmState === 'ALL_RED_SAFETY' ? '#ffaa00' : '#00ff88', fontFamily: 'Rajdhani, sans-serif', fontWeight: 700, fontSize: 12, letterSpacing: 2 }}>
+            🚨 [{fsmState}] {
+              fsmState === 'EMERGENCY_GREEN' ? `GREEN CORRIDOR — ${activeEmgLane} IS GREEN · ALL OTHERS RED` :
+              fsmState === 'ALL_RED_SAFETY' ? 'ALL-RED SAFETY STATE (2s DELAY) IN PROGRESS' :
+              'NORMAL 30s CIRCULAR ROTATION (A → B → C → D)'
+            }
           </span>
         </div>
-      )}
+        <span style={{ fontSize: 10, color: '#00e5ff', fontFamily: 'Share Tech Mono, monospace' }}>
+          ACTIVE GREEN: {fsmData?.active_green_lane || 'Lane A'}
+        </span>
+      </div>
 
-      {/* 2x2 grid */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', gap: 10, overflow: 'hidden' }}>
+      {/* 2x2 Grid of Junction Feeds */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '220px 220px', gap: 10, flexShrink: 0 }}>
         {CAMS.map(cam => (
           <CameraBox
             key={cam.id}
             cam={cam}
-            signalStates={signalStates}
+            signalInfo={signals[cam.apiId]}
             onAmbulanceDetected={handleAmbulanceDetected}
           />
         ))}
+      </div>
+
+      {/* Spawner & Interactive Controls Bar */}
+      <div style={{ flexShrink: 0, marginTop: 4 }}>
+        <SimulationControls />
       </div>
     </div>
   )

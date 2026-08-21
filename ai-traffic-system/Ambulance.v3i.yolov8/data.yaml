@@ -1,0 +1,14 @@
+path: d:/Projects/ai-traffic-system/ai-traffic-system/Ambulance.v3i.yolov8
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 1
+names: ['Ambulance']
+
+roboflow:
+  workspace: ambulance-oxmvh
+  project: ambulance-2ks9z
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/ambulance-oxmvh/ambulance-2ks9z/dataset/3

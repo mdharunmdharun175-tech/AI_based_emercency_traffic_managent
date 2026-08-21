@@ -53,3 +53,16 @@ async def recent_detections(limit: int = 50):
         for i in range(limit)
     ]
     return JSONResponse(content={"events": events})
+
+
+@router.get("/logs/export")
+async def export_logs_csv():
+    """Export system logs & event history as downloadable CSV file."""
+    from fastapi.responses import Response
+    from database_sqlite import SQLiteDatabase
+    csv_content = SQLiteDatabase.export_logs_csv()
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=traffic_system_event_logs.csv"}
+    )

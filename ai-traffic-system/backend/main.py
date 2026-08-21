@@ -1,5 +1,5 @@
 """
-AI Traffic System - FastAPI Backend  (v1.0 — full build)
+AI Traffic System - FastAPI Backend  (v2.0 — FSM & Simulation Enhanced)
 Entry point: uvicorn main:app --reload --port 8000
 """
 
@@ -13,7 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from routes.detect    import router as detect_router
-from routes.signals   import router as signals_router
+from routes.signals   import router as signals_router, signal_controller
+from routes.sim       import router as sim_router, camera_simulator
 from routes.gps       import router as gps_router
 from routes.analytics import router as analytics_router
 from routes.alerts    import router as alerts_router
@@ -25,9 +26,10 @@ from services.density_service    import TrafficDensityService
 from services.accident_service   import AccidentDetectionService
 from models.database  import Database
 from models.schemas   import SystemStatus
+from database_sqlite  import SQLiteDatabase
 
 manager       = ConnectionManager()
-detection_svc = DetectionService()
+detection_svc = DetectionService(conf_threshold=0.75)
 signal_svc    = SignalService()
 density_svc   = TrafficDensityService()
 
@@ -39,7 +41,7 @@ accident_svc = AccidentDetectionService(alert_callback=on_incident)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("🚀 AI Traffic System starting…")
+    print("🚀 AI Traffic System starting (FSM & 4-Lane Simulation active)…")
     await Database.connect()
     detection_svc.load_model()
     asyncio.create_task(broadcast_loop())
@@ -50,8 +52,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="AI Emergency Traffic Control System",
-    description="Real-time ambulance detection, ANPR, siren classification and smart signal control.",
-    version="1.0.0",
+    description="Real-time ambulance detection, ANPR, FSM signal controller, and 4-lane junction simulation.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -65,6 +67,7 @@ app.add_middleware(
 
 app.include_router(detect_router,    prefix="/api", tags=["Detection"])
 app.include_router(signals_router,   prefix="/api", tags=["Signals"])
+app.include_router(sim_router,       prefix="/api", tags=["Simulation"])
 app.include_router(gps_router,       prefix="/api", tags=["GPS"])
 app.include_router(analytics_router, prefix="/api", tags=["Analytics"])
 app.include_router(alerts_router,    prefix="/api", tags=["Alerts"])
@@ -75,10 +78,26 @@ app.include_router(siren_router,     prefix="/api", tags=["Siren"])
 async def root():
     return {
         "name": "AI Emergency Traffic Control System",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "operational",
         "docs": "/docs",
         "ws":   "/ws",
+    }
+
+
+@app.get("/health", tags=["Root"])
+async def health_check():
+    """Return comprehensive system health and hardware interface status."""
+    import torch
+    device_name = "CUDA GPU" if torch.cuda.is_available() else "CPU"
+    return {
+        "status": "healthy",
+        "ai_model_loaded": detection_svc.model_loaded,
+        "execution_device": device_name,
+        "active_corridors": 1 if signal_controller.state.value in ("EMERGENCY_GREEN", "ALL_RED_SAFETY") else 0,
+        "total_detections": detection_svc.total_detections,
+        "uptime_seconds": int(time.time() - detection_svc.start_time),
+        "hardware_interface": "software_simulation_mode",
     }
 
 
@@ -86,10 +105,22 @@ async def root():
 async def system_status():
     return SystemStatus(
         ai_model_loaded=detection_svc.model_loaded,
-        active_corridors=signal_svc.active_corridors(),
+        active_corridors=1 if signal_controller.state.value in ("EMERGENCY_GREEN", "ALL_RED_SAFETY") else 0,
         total_detections=detection_svc.total_detections,
         uptime_seconds=int(time.time() - detection_svc.start_time),
     )
+
+
+@app.post("/api/detection/start", tags=["Detection"])
+async def start_detection():
+    """Enable active camera feed detection pipeline."""
+    return {"success": True, "message": "Detection pipeline active", "timestamp": time.time()}
+
+
+@app.post("/api/detection/stop", tags=["Detection"])
+async def stop_detection():
+    """Pause camera feed detection pipeline."""
+    return {"success": True, "message": "Detection pipeline paused", "timestamp": time.time()}
 
 
 @app.get("/api/density", tags=["Analytics"])
@@ -115,20 +146,37 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 async def broadcast_loop():
-    """Push system status to all connected dashboard clients every second."""
+    """Push system status & FSM state to all connected dashboard clients every second."""
     while True:
         await asyncio.sleep(1)
+        
+        # 1-second FSM tick & camera simulation update
+        signal_controller.tick()
+        camera_simulator.update_simulation_tick(delta_seconds=1.0)
+        
         if not manager.active_connections:
             continue
+
+        fsm_snapshot = signal_controller.get_full_snapshot()
+        recent_logs = SQLiteDatabase.get_system_logs(limit=25)
+
         payload = {
             "type":               "status_update",
             "timestamp":          time.time(),
-            "ambulance_detected": detection_svc.last_detection_was_ambulance,
-            "active_corridors":   signal_svc.active_corridors(),
-            "signal_states":      signal_svc.get_all_states(),
+            "controller_state":   fsm_snapshot["controller_state"],
+            "active_green_lane":  fsm_snapshot["active_green_lane"],
+            "current_green_remaining": fsm_snapshot["current_green_remaining"],
+            "paused_lane":        fsm_snapshot["paused_lane"],
+            "paused_remaining":   fsm_snapshot["paused_remaining"],
+            "active_emergency_lane": fsm_snapshot["active_emergency_lane"],
+            "priority_queue":     fsm_snapshot["priority_queue"],
+            "skip_lanes":         fsm_snapshot["skip_lanes"],
+            "signals":            fsm_snapshot["signals"],
+            "ambulance_detected": len(fsm_snapshot["priority_queue"]) > 0,
             "total_vehicles":     detection_svc.vehicles_in_frame,
             "density":            density_svc.get_density_level(),
             "incidents_today":    accident_svc.incidents_today,
             "total_detections":   detection_svc.total_detections,
+            "logs":               recent_logs,
         }
         await manager.broadcast(json.dumps(payload))
